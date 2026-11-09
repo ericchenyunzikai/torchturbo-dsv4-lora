@@ -75,7 +75,7 @@ def test_get_effective_weight_plain_linear_passthrough() -> None:
     assert get_effective_weight(linear) is linear.weight
 
 
-def test_get_effective_weight_matches_manual_delta_and_merge() -> None:
+def test_get_effective_weight_keeps_adapter_in_graph() -> None:
     model = get_peft_model(
         LinearModel(),
         LoraConfig(r=2, lora_alpha=3, target_modules=["linear"]),
@@ -86,24 +86,14 @@ def test_get_effective_weight_matches_manual_delta_and_merge() -> None:
         layer.lora_A["default"].weight.normal_()
         layer.lora_B["default"].weight.normal_()
 
-    base = layer.base_layer.weight
-    weight_a = layer.lora_A["default"].weight
-    weight_b = layer.lora_B["default"].weight
-    expected = base + weight_b @ weight_a * layer.scaling["default"]
-
-    torch.testing.assert_close(get_effective_weight(layer), expected)
-
-    # Autograd must reach the adapter parameters through the returned tensor
-    # (regression guard for weight-consuming forward paths that used to
-    # read ``.weight`` directly).
-    effective = get_effective_weight(layer)
-    effective.sum().backward()
+    # Numerics are covered by test_merge_lora_linear_matches_peft_dora_merge;
+    # this only guards the autograd contract: the returned tensor must carry
+    # gradients to the adapters (the pre-fix .weight read left them at None).
+    get_effective_weight(layer).sum().backward()
     assert layer.lora_A["default"].weight.grad is not None
     assert layer.lora_B["default"].weight.grad is not None
 
-    # Merging folds the delta into the base weight: afterwards the effective
+    # After merge the delta folds into the base weight, so the effective
     # weight is exactly the merged base weight.
-    before_merge = get_effective_weight(layer).detach().clone()
     model.merge_adapter()
-    torch.testing.assert_close(layer.base_layer.weight, before_merge)
     assert get_effective_weight(layer) is layer.base_layer.weight
